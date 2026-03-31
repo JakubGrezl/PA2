@@ -91,11 +91,11 @@ class MedianArray {
 
         // switching heap heads to rebalance
         void rebalance_heap() {
-            if (low_heap.size() > high_heap.size() + 1) {
+            if (low_heap.size() > high_heap.size() ) {
                 high_heap.push(low_heap.top());
                 low_heap.pop();
             }
-            else if (high_heap.size() > low_heap.size() + 1) {
+            else if (high_heap.size() > low_heap.size() ) {
                 low_heap.push(high_heap.top());
                 high_heap.pop();
             }
