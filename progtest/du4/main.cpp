@@ -11,6 +11,7 @@
 #include <set>
 #include <list>
 #include <map>
+#include <utility>
 #include <vector>
 #include <queue>
 #include <string>
@@ -25,35 +26,74 @@
 #ifndef __PROGTEST__
 class CTimeStamp {
 public:
-  CTimeStamp(int year,
-             int month,
-             int day,
-             int hour,
-             int minute,
-             int sec);
+  CTimeStamp(int year, int month, int day, int hour, int minute, int sec): year(year), month(month), day(day), hour(hour), minute(minute), sec(sec) {};
 
-  std::strong_ordering operator <=
-  >
-  (
-  const CTimeStamp &x
-  )
-  const;
+  CTimeStamp(CTimeStamp && from) noexcept : year(from.year), month(from.month), day(from.day), hour(from.hour), minute(from.minute), sec(from.sec) {
+    from.year = 0;
+    from.month = 0;
+    from.day = 0;
+    from.hour = 0;
+    from.minute = 0;
+    from.sec = 0;
+  };
 
-  bool operator ==(const CTimeStamp &x) const;
+  CTimeStamp(const CTimeStamp & from) = default;
 
-  friend std::ostream &operator <<(std::ostream &os,
-                                   const CTimeStamp &x);
+  ~CTimeStamp() = default;
+
+  // checks all values separatly
+  std::strong_ordering operator<=>(const CTimeStamp &x) const = default;
+  bool operator==(const CTimeStamp &x) const = default;
+
+  friend std::ostream &operator <<(std::ostream &os, const CTimeStamp &x) {
+    //           set fill once;
+    return os << std::setfill('0')
+      << std::setw(4) << x.year << '-'
+      << std::setw(2) << x.month << '-'
+      << std::setw(2) << x.day << ' '
+      << std::setw(2) << x.hour << ':'
+      << std::setw(2) << x.minute << ':'
+      << std::setw(2) << x.sec
+      << std::setfill(' ');
+        // reseting set fill
+  };
+
+private:
+  int year;
+  int month;
+  int day;
+  int hour;
+  int minute;
+  int sec;
 };
 
 //=================================================================================================
 class CMailBody {
 public:
-  CMailBody(int size,
-            const char data[]);
+  CMailBody(int size, const char data[]): m_Size(size), m_Data(new char[m_Size]) {
+    // copy
+    for (int i = 0; i < m_Size; i++) {
+      m_Data[i] =  data[i];
+    }
+  };
+
+  CMailBody(CMailBody && from) noexcept : m_Size(from.m_Size), m_Data(from.m_Data) {
+    from.m_Size = 0;
+    from.m_Data = nullptr;
+  };
+
+  CMailBody(const CMailBody & from): m_Size(from.m_Size), m_Data(new char[m_Size]) {
+    for (int i = 0; i < m_Size; i++) {
+      m_Data[i] = from.m_Data[i];
+    }
+  };
+
+  ~CMailBody() {
+    delete [] m_Data;
+  };
 
   // copy cons/op=/destructor is correctly implemented in the testing environment
-  friend std::ostream &operator <<(std::ostream &os,
-                                   const CMailBody &x) {
+  friend std::ostream &operator <<(std::ostream &os, const CMailBody &x) {
     return os << "mail body: " << x.m_Size << " B";
   }
 
@@ -65,9 +105,12 @@ private:
 //=================================================================================================
 class CAttach {
 public:
-  CAttach(int x)
-    : m_X(x) {
-  }
+  explicit CAttach(const int x): m_X(x) {};
+
+  CAttach(CAttach && from) noexcept: m_X(from.m_X), m_RefCnt(from.m_RefCnt) {
+    from.m_RefCnt = 0;
+    from.m_X = 0;
+  };
 
   void addRef() {
     m_RefCnt++;
@@ -78,69 +121,168 @@ public:
       delete this;
   }
 
+  CAttach(const CAttach &from) = default;
+
+  CAttach & operator= (const CAttach &from) = default;
+
+  friend std::ostream &operator <<(std::ostream &os, const CAttach &x) {
+    return os << "attachment: " << x.m_X << " B";
+  }
+
 private:
   int m_X;
   int m_RefCnt = 1;
-
-  CAttach(const CAttach &x);
-
-  CAttach &operator =(const CAttach &x);
-
-  ~CAttach() = default;
-
-  friend std::ostream &operator <<(std::ostream &os,
-                                   const CAttach &x) {
-    return os << "attachment: " << x.m_X << " B";
-  }
 };
 
 //=================================================================================================
 #endif /* __PROGTEST__, DO NOT remove */
-
-
 class CMail {
 public:
-  CMail(const CTimeStamp &timeStamp,
-        const std::string &from,
-        const CMailBody &body,
-        CAttach *attach);
+  CMail(const CTimeStamp &timeStamp, const std::string &from, const CMailBody &body, CAttach *attach)
+    : time_stamp_(timeStamp), from_(from), body_(body), attachment_(attach) {
+    if (attach != nullptr) attach->addRef();
+  };
 
-  const std::string &from() const;
+  CMail(CMail && from) noexcept: time_stamp_(std::move(from.time_stamp_)), from_(std::move(from.from_)), body_(std::move(from.body_)), attachment_(std::move(from.attachment_)) {};
 
-  const CMailBody &body() const;
+  CMail(const CMail & from) : time_stamp_(from.time_stamp_), from_(from.from_), body_(from.body_), attachment_(from.attachment()) {};
 
-  const CTimeStamp &timeStamp() const;
+  ~CMail() = default;
 
-  CAttach *attachment() const;
+  const std::string & from() const {
+    return from_;
+  };
 
-  friend std::ostream &operator <<(std::ostream &os,
-                                   const CMail &x);
+  const CMailBody & body() const {
+    return body_;
+  };
 
+  const CTimeStamp &timeStamp() const {
+    return time_stamp_;
+  };
+
+  CAttach * attachment() const {
+    if (attachment_ != nullptr) {
+      attachment_->addRef();
+    }
+    return attachment_;
+  };
+
+  friend std::ostream &operator <<(std::ostream &os, const CMail &x) {
+    os << x.timeStamp() << ' ' << x.from() << ' ' << x.body();
+
+    if (x.attachment() != nullptr) os << " + " << *(x.attachment_);
+
+    return os;
+  };
+
+  std::weak_ordering operator <=>(const CMail &rhs) const {
+    return this->timeStamp() <=> rhs.timeStamp();
+  };
 private:
-  // todo
+  CTimeStamp time_stamp_;
+  std::string from_;
+  CMailBody body_;
+  CAttach * attachment_ = nullptr;
 };
 
 //=================================================================================================
 class CMailBox {
 public:
-  CMailBox();
+  CMailBox() {
+    addrs.emplace("inbox");
+  };
 
-  bool delivery(const CMail &mail);
+  CMailBox(const CMailBox & from) = default;
 
-  bool newFolder(const std::string &folderName);
+  bool delivery(const CMail & mail) {
+    return insert("inbox", mail);
+  }
 
-  bool moveMail(const std::string &fromFolder,
-                const std::string &toFolder);
+  bool newFolder(const std::string & folderName) {
+    return addrs.emplace(folderName).second;
+  };
 
-  std::list<CMail> listMail(const std::string &folderName,
-                            const CTimeStamp &from,
-                            const CTimeStamp &to) const;
+  bool moveMail(const std::string &fromFolder, const std::string &toFolder) {
+    auto range = folders.equal_range(fromFolder);
 
-  std::set<std::string> listAddr(const CTimeStamp &from,
-                                 const CTimeStamp &to) const;
+    if (fromFolder == toFolder)
+      return true;
+
+    if (range.first == folders.end())
+      return false;
+
+    while (true)  {
+      // extracts content to node, moved;
+      auto node = folders.extract(fromFolder);
+      // check if found all
+      if (node.empty())
+        break;
+
+      // change folder
+      node.key() = toFolder;
+      // move back to array
+      folders.insert(std::move(node));
+    }
+
+    return true;
+  };
+
+  std::list<CMail> listMail(const std::string &folderName, const CTimeStamp &from, const CTimeStamp &to) const {
+    auto [fst, snd] = folders.equal_range(folderName);
+
+    if (fst == snd)
+      return {};
+
+    std::list<CMail> mails;
+
+    for (auto it = fst; it != snd; ++it) {
+      if (auto timestamp = it->second.timeStamp(); timestamp >= from && timestamp <= to) {
+        mails.emplace_back(it->second);
+      }
+    }
+
+    mails.sort();
+
+    return mails;
+  };
+
+  std::set<std::string> listAddr(const CTimeStamp &from, const CTimeStamp &to) const {
+    std::set<std::string> addrs_tmp;
+    for (const auto & folder : folders) {
+      if (auto timestamp = folder.second.timeStamp(); timestamp >= from && timestamp <= to) {
+        addrs_tmp.emplace(folder.second.from());
+      }
+    }
+
+    return addrs_tmp;
+  };
+
+  void printAddrs() {
+    for (const auto &x: addrs) {
+      std::cout << x << std::endl;
+    }
+  }
+
+  void printMail() {
+    for (const auto &x: folders) {
+      std::cout << x.first << x.second << std::endl;
+    }
+  }
 
 private:
-  // todo
+  std::multimap<std::string, CMail> folders;
+  std::set<std::string> addrs;
+
+  /*!
+   * constructs copy of CMail referenced value
+   */
+  bool insert(const std::string & folder_name, const CMail & mail) {
+    if (!addrs.contains(folder_name))
+      return false;
+    folders.emplace(folder_name, mail);
+    return true;
+  }
 };
 
 //=================================================================================================
@@ -149,6 +291,7 @@ static std::string showMail(const std::list<CMail> &l) {
   std::ostringstream oss;
   for (const auto &x: l)
     oss << x << std::endl;
+
   return oss.str();
 }
 
@@ -172,6 +315,7 @@ void test() {
   oss << *att;
   att->release();
   assert(oss . str () == "attachment: 100 B");
+
   assert(showMail ( { testMail } ) == "2026-01-02 12:05:00 test@domain.cz mail body: 10 B + attachment: 100 B\n");
 
   CMailBox m0;
@@ -247,6 +391,7 @@ void test() {
   assert(showMail ( m1 . listMail ( "work",
     CTimeStamp ( 2000, 1, 1, 0, 0, 0 ),
     CTimeStamp ( 2050, 12, 31, 23, 59, 59 ) ) ) == "");
+  // endless loop
   assert(m1 . moveMail ( "inbox", "work" ));
   assert(showMail ( m1 . listMail ( "inbox",
     CTimeStamp ( 2000, 1, 1, 0, 0, 0 ),
