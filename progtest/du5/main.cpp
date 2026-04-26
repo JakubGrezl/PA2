@@ -168,7 +168,6 @@ public:
     int shortest_time(const std::string & from, const std::string & to) const {
         if (from == to) return 0;
 
-        // Dijkstra's algorithm requires a priority queue for weighted edges
         std::priority_queue<std::pair<int, std::string>,
                             std::vector<std::pair<int, std::string>>,
                             std::greater<>> pq;
@@ -362,7 +361,6 @@ public:
     void insert(std::istream & is) {
         char header[4];
 
-        // Čteme 4 bajty do syrového pole
         while (is.read(header, 4)) {
             std::string mode(header, 4);
 
@@ -482,7 +480,7 @@ int main() {
     CVisitorLog log = b.processLog("test/in1.log");
 
 
-    for (const char *fn: std::initializer_list<const char *>{"test/in1.log", "test/in2.log", "test/in3.log"}) {
+    for (const char *fn: std::initializer_list<const char *>{"test/in1.log", "test/in2.log", "test/in3.log", "test/in4.log", "test/in5.log"}) {
         if (debug) std::cout << "Testing: " << fn << '\n';
         basicTests(b.processLog(fn));
         if (debug) std::cout << "OK - test: " << fn << std::endl;
