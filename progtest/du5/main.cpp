@@ -28,6 +28,8 @@
 using namespace std::literals;
 #endif /* __PROGTEST__ */
 
+constexpr bool debug = true;
+
 bool divisible(int number, int divisor) {
     return number % divisor == 0;
 }
@@ -246,15 +248,13 @@ public:
 
                 time_c latest = exit.time - travel_out;
 
-                // Pokud earliest > latest, fyzicky nelze stihnout cestu tam a zpět.
-                // (Ponecháno >, protože earliest == latest znamená korektní návštěvu na 0 minut - tzv. jen otočka)
+
                 if (earliest > latest) continue;
 
-                // Kontrola překryvu intervalu pobytu s hledaným časem
+
                 if (not_after.has_value()  && earliest > *not_after)  continue;
                 if (not_before.has_value() && latest   < *not_before) continue;
             } else {
-                // Osoba vešla, ale log o výstupu neexistuje (stále je na základně)
                 if (not_after.has_value() && earliest > *not_after) continue;
             }
 
@@ -268,9 +268,30 @@ class CVisitorLog {
     std::map<std::string, Person> people;
     std::shared_ptr<path_graph> path_graph_i;
 
-    void insert_log(std::istream & is, const std::string & zone, size_t lines_cnt) {
+    static constexpr auto little_endian = "IIII";
+    static constexpr auto big_endian = "MMMM";
+
+    int read_bin_2(std::istream & is, const std::string & endian) {
+        uint8_t buffer[2];
+        is.read(reinterpret_cast<char *>(buffer), 2);
+
+        if (endian == big_endian)
+            return ((uint16_t)(buffer[0]) << 8) | buffer[1];
+        return ((uint16_t)(buffer[1]) << 8) | buffer[0];
+    }
+
+    int read_bin_4(std::istream & is, const std::string & endian = little_endian) {
+        uint8_t buffer[4];
+        is.read(reinterpret_cast<char *>(buffer), 4);
+
+        if (endian == big_endian)
+            return ((uint32_t)(buffer[0]) << 24) | ((uint32_t)(buffer[1]) << 16) | ((uint32_t)(buffer[2]) << 8)  | (uint32_t)(buffer[3]);
+        return ((uint32_t)(buffer[3]) << 24) | ((uint32_t)(buffer[2]) << 16) | ((uint32_t)(buffer[1]) << 8)  | (uint32_t)(buffer[0]);
+    }
+
+    void insert_text(std::istream & is, const std::string & zone, size_t lines_cnt) {
         std::string line;
-        std::getline(is, line); // Konzumace zbytku řádku za TEXT hlavičkou
+        std::getline(is, line);
 
         for (size_t i = 0; i < lines_cnt; i++) {
             if (!std::getline(is, line)) break;
@@ -286,7 +307,7 @@ class CVisitorLog {
             std::string name;
             std::getline(iss >> std::ws, name);
 
-            while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) {
+            while (!name.empty() && std::isspace(name.back())) {
                 name.pop_back();
             }
 
@@ -294,7 +315,26 @@ class CVisitorLog {
                 throw std::runtime_error("parsing error");
             }
 
-            // Místo řešení "kde zrovna osoba je" jen tupě přidáme log event
+            auto result = people.find(name);
+            if (result == people.end()) {
+                auto [it, inserted] = people.emplace(name, Person(name));
+                it->second.add_event(zone, time_tmp);
+            } else {
+                result->second.add_event(zone, time_tmp);
+            }
+        }
+    }
+
+    void insert_binary(std::istream & is, const std::string & zone, size_t lines_cnt, const std::string & endian) {
+        for (int i = 0; i < lines_cnt; i++) {
+            uint32_t bytes = read_bin_4(is, endian);
+
+            time_c time_tmp( (bytes >> 20) & 0xFFF, (bytes >> 16) & 0x0F, (bytes >> 11) & 0x1F, (bytes >> 6) & 0x1F, bytes & 0x3F);
+
+            int name_len = read_bin_2(is, endian);
+            std::string name(name_len, '\0');
+            is.read(name.data(), name_len);
+
             auto result = people.find(name);
             if (result == people.end()) {
                 auto [it, inserted] = people.emplace(name, Person(name));
@@ -311,22 +351,41 @@ public:
     std::set<std::string> search(const CAuditFilter & filter) const {
         std::set<std::string> names;
         for (const auto & [name, person] : people)
-            if (person.could_visit(filter.zone, filter.not_before, filter.not_after, *path_graph_i))
+            if (person.could_visit(filter.zone, filter.not_before, filter.not_after, *path_graph_i)) {
                 names.emplace(name);
+                if (debug) std::cout << name << '\n';
+            }
+            if (debug) std::cout << std::endl;
         return names;
     }
 
     void insert(std::istream & is) {
-        std::string mode;
-        std::string zone;
+        char header[4];
 
-        while (is >> mode >> zone) {
+        // Čteme 4 bajty do syrového pole
+        while (is.read(header, 4)) {
+            std::string mode(header, 4);
+
             if (mode == "TEXT") {
                 int lines_cnt;
-                if (is >> lines_cnt) {
-                    insert_log(is, zone, lines_cnt);
+                std::string zone;
+                if (is >> zone >> lines_cnt) {
+                    insert_text(is, zone, lines_cnt);
                 }
+                continue;
             }
+
+            if (mode != little_endian && mode != big_endian)
+                throw std::runtime_error("endian: parsing error");
+
+            int zone_len = read_bin_2(is, mode);
+
+            std::string zone(zone_len, '\0');
+            is.read(zone.data(), zone_len);
+
+            int lines_cnt = read_bin_4(is, mode);
+
+            insert_binary(is, zone, lines_cnt, mode);
         }
     }
 };
@@ -424,8 +483,9 @@ int main() {
 
 
     for (const char *fn: std::initializer_list<const char *>{"test/in1.log", "test/in2.log", "test/in3.log"}) {
+        if (debug) std::cout << "Testing: " << fn << '\n';
         basicTests(b.processLog(fn));
-        std::cout << "OK - test: " << fn << std::endl;
+        if (debug) std::cout << "OK - test: " << fn << std::endl;
     }
     return EXIT_SUCCESS;
 }
