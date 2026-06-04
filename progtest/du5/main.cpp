@@ -28,7 +28,7 @@
 using namespace std::literals;
 #endif /* __PROGTEST__ */
 
-constexpr bool debug = true;
+constexpr bool debug = false;
 
 bool divisible(int number, int divisor) {
     return number % divisor == 0;
@@ -87,16 +87,31 @@ public:
         int y, m, d, h, min;
         char sep1, sep2, sep3, sep4;
 
-        if (is >> y >> sep1 >> m >> sep2 >> d >> std::noskipws >> sep3 >> std::skipws >> h >> sep4 >> min) {
-            if (sep1 == '-' && sep2 == '-' && sep3 == ' ' && sep4 == ':') {
-                time_c temp;
-                temp.year = y; temp.month = m; temp.day = d; temp.hour = h; temp.minute = min;
-                if (temp.validate()) {
-                    time = temp;
-                    return is;
-                }
+        if (!(is >> y >> sep1 >> m >> sep2 >> d)) {
+            is.setstate(std::ios::failbit);
+            return is;
+        }
+
+        is.get(sep3);
+        if (sep3 != ' ') {
+            is.setstate(std::ios::failbit);
+            return is;
+        }
+
+        if (!(is >> h >> sep4 >> min)) {
+            is.setstate(std::ios::failbit);
+            return is;
+        }
+
+        if (sep1 == '-' && sep2 == '-' && sep4 == ':') {
+            time_c temp;
+            temp.year = y; temp.month = m; temp.day = d; temp.hour = h; temp.minute = min;
+            if (temp.validate()) {
+                time = temp;
+                return is;
             }
         }
+
         is.setstate(std::ios::failbit);
         return is;
     }
@@ -153,50 +168,48 @@ struct CAuditFilter {
 };
 
 class path_graph {
-    std::unordered_map<std::string, std::vector<std::pair<std::string, int>>> paths;
+    std::unordered_map<std::string, std::unordered_map<std::string, int>> dist;
 
-    void insert(const std::string & from, const std::string & to, int minutes) {
-        paths[from].emplace_back(to, minutes);
+    void run_dijkstra(const std::string & source) {
+        std::priority_queue<std::pair<int,std::string>,
+                            std::vector<std::pair<int,std::string>>,
+                            std::greater<>> pq;
+        auto & d = dist[source];
+        d[source] = 0;
+        pq.emplace(0, source);
+
+        while (!pq.empty()) {
+            auto [cost, u] = pq.top(); pq.pop();
+            if (cost > d[u]) continue;
+            for (auto & [v, w] : adj[u]) {
+                int nc = cost + w;
+                if (!d.count(v) || nc < d[v]) {
+                    d[v] = nc;
+                    pq.emplace(nc, v);
+                }
+            }
+        }
     }
 
+    std::unordered_map<std::string, std::vector<std::pair<std::string,int>>> adj;
+
 public:
-    void add(const std::string & from, const std::string & to, int minutes) {
-        insert(from, to, minutes);
-        insert(to, from, minutes);
+    void add(const std::string & a, const std::string & b, int w) {
+        adj[a].emplace_back(b, w);
+        adj[b].emplace_back(a, w);
+    }
+
+    void precompute() {
+        for (auto & [node, _] : adj)
+            run_dijkstra(node);
     }
 
     int shortest_time(const std::string & from, const std::string & to) const {
         if (from == to) return 0;
-
-        std::priority_queue<std::pair<int, std::string>,
-                            std::vector<std::pair<int, std::string>>,
-                            std::greater<>> pq;
-        std::unordered_map<std::string, int> distances;
-
-        pq.emplace(0, from);
-        distances[from] = 0;
-
-        while (!pq.empty()) {
-            auto [dist, current] = pq.top();
-            pq.pop();
-
-            if (dist > distances[current]) continue;
-            if (current == to) return dist;
-
-            auto it = paths.find(current);
-            if (it == paths.end()) continue;
-
-            for (const auto & [neighbor, minutes] : it->second) {
-                int new_dist = dist + minutes;
-                auto d_it = distances.find(neighbor);
-
-                if (d_it == distances.end() || new_dist < d_it->second) {
-                    distances[neighbor] = new_dist;
-                    pq.emplace(new_dist, neighbor);
-                }
-            }
-        }
-        return -1;
+        auto it = dist.find(from);
+        if (it == dist.end()) return -1;
+        auto jt = it->second.find(to);
+        return (jt == it->second.end()) ? -1 : jt->second;
     }
 };
 
@@ -204,7 +217,6 @@ struct Event {
     time_c time;
     std::string zone;
 
-    // Operátor potřebný pro chronologické seřazení událostí
     bool operator<(const Event & other) const {
         return time < other.time;
     }
@@ -212,44 +224,68 @@ struct Event {
 
 class Person {
     std::string name;
-    std::vector<Event> events;
+
+    struct Stay {
+        time_c entry_time;
+        std::string entry_zone;
+        std::optional<time_c> exit_time;
+        std::string exit_zone;
+
+        bool operator<(const Stay & other) const {
+            return entry_time < other.entry_time;
+        }
+    };
+
+    mutable std::vector<Stay> stays;
+    std::vector<Event> raw_events;
+    mutable bool is_built = false;
+
+    void build_stays() const {
+        std::vector<Event> sorted = raw_events;
+        std::sort(sorted.begin(), sorted.end());
+
+        stays.clear();
+        for (size_t i = 0; i < sorted.size(); i += 2) {
+            Stay s;
+            s.entry_time = sorted[i].time;
+            s.entry_zone = sorted[i].zone;
+            if (i + 1 < sorted.size()) {
+                s.exit_time = sorted[i+1].time;
+                s.exit_zone = sorted[i+1].zone;
+            }
+            stays.push_back(std::move(s));
+        }
+        is_built = true;
+    }
 
 public:
     Person(std::string name_) : name(std::move(name_)) {}
 
+    void final() {
+        if (!is_built) build_stays();
+    }
+
     void add_event(std::string zone, const time_c & time) {
-        events.push_back({time, std::move(zone)});
+        raw_events.push_back({time, std::move(zone)});
     }
 
     bool could_visit(const std::string & target_zone,
                      const std::optional<time_c> & not_before,
                      const std::optional<time_c> & not_after,
                      const path_graph & graph) const {
-
-        // Vytvoříme kopii událostí a bezpečně je chronologicky seřadíme
-        std::vector<Event> sorted_events = events;
-        std::sort(sorted_events.begin(), sorted_events.end());
-
-        // Procházíme události po dvojicích (Vstup -> Výstup)
-        for (size_t i = 0; i < sorted_events.size(); i += 2) {
-            const Event & entry = sorted_events[i];
-            bool has_exit = (i + 1 < sorted_events.size());
-
-            int travel_in = graph.shortest_time(entry.zone, target_zone);
+        for (const auto & stay : stays) {
+            int travel_in = graph.shortest_time(stay.entry_zone, target_zone);
             if (travel_in < 0) continue;
 
-            time_c earliest = entry.time + travel_in;
+            time_c earliest = stay.entry_time + travel_in;
 
-            if (has_exit) {
-                const Event & exit = sorted_events[i + 1];
-                int travel_out = graph.shortest_time(target_zone, exit.zone);
+            if (stay.exit_time.has_value()) {
+                int travel_out = graph.shortest_time(target_zone, stay.exit_zone);
                 if (travel_out < 0) continue;
 
-                time_c latest = exit.time - travel_out;
-
+                time_c latest = *stay.exit_time - travel_out;
 
                 if (earliest > latest) continue;
-
 
                 if (not_after.has_value()  && earliest > *not_after)  continue;
                 if (not_before.has_value() && latest   < *not_before) continue;
@@ -272,7 +308,9 @@ class CVisitorLog {
 
     int read_bin_2(std::istream & is, const std::string & endian) {
         uint8_t buffer[2];
-        is.read(reinterpret_cast<char *>(buffer), 2);
+        if (!is.read(reinterpret_cast<char *>(buffer), 2)) {
+            throw std::runtime_error("bin: 2 bajt");
+        }
 
         if (endian == big_endian)
             return ((uint16_t)(buffer[0]) << 8) | buffer[1];
@@ -281,7 +319,9 @@ class CVisitorLog {
 
     int read_bin_4(std::istream & is, const std::string & endian = little_endian) {
         uint8_t buffer[4];
-        is.read(reinterpret_cast<char *>(buffer), 4);
+        if (!is.read(reinterpret_cast<char *>(buffer), 4)) {
+            throw std::runtime_error("bin: 4 bajt)");
+        }
 
         if (endian == big_endian)
             return ((uint32_t)(buffer[0]) << 24) | ((uint32_t)(buffer[1]) << 16) | ((uint32_t)(buffer[2]) << 8)  | (uint32_t)(buffer[3]);
@@ -290,28 +330,35 @@ class CVisitorLog {
 
     void insert_text(std::istream & is, const std::string & zone, size_t lines_cnt) {
         std::string line;
-        std::getline(is, line);
+        std::istringstream iss;
 
         for (size_t i = 0; i < lines_cnt; i++) {
-            if (!std::getline(is, line)) break;
-            if (line.empty()) continue;
+            if (!std::getline(is, line)) {
+                throw std::runtime_error("insert_text: not enough lines");
+            }
 
-            std::istringstream iss(line);
+            iss.clear();
+            iss.str(line);
             time_c time_tmp;
 
             if (!(iss >> time_tmp)) {
                 throw std::runtime_error("parsing error");
             }
 
+            char space_after_time;
+            if (!iss.get(space_after_time) || space_after_time != ' ') {
+                throw std::runtime_error("parsing error: chybi striktni mezera za casem");
+            }
+
             std::string name;
-            std::getline(iss >> std::ws, name);
+            std::getline(iss, name);
 
             while (!name.empty() && std::isspace(name.back())) {
                 name.pop_back();
             }
 
-            if (name.empty()) {
-                throw std::runtime_error("parsing error");
+            while (!name.empty() && std::isspace(name.back())) {
+                name.pop_back();
             }
 
             auto result = people.find(name);
@@ -325,14 +372,18 @@ class CVisitorLog {
     }
 
     void insert_binary(std::istream & is, const std::string & zone, size_t lines_cnt, const std::string & endian) {
-        for (int i = 0; i < lines_cnt; i++) {
+        for (size_t i = 0; i < lines_cnt; i++) {
             uint32_t bytes = read_bin_4(is, endian);
 
             time_c time_tmp( (bytes >> 20) & 0xFFF, (bytes >> 16) & 0x0F, (bytes >> 11) & 0x1F, (bytes >> 6) & 0x1F, bytes & 0x3F);
 
             int name_len = read_bin_2(is, endian);
+
             std::string name(name_len, '\0');
-            is.read(name.data(), name_len);
+
+            if (!is.read(name.data(), name_len)) {
+                throw std::runtime_error("bin: nevim");
+            }
 
             auto result = people.find(name);
             if (result == people.end()) {
@@ -347,14 +398,23 @@ class CVisitorLog {
 public:
     CVisitorLog(const std::shared_ptr<path_graph> & path_graph_i_) : path_graph_i(path_graph_i_) {}
 
+    void final() {
+        for (auto & [name, person] : people)
+            person.final();
+    }
+
     std::set<std::string> search(const CAuditFilter & filter) const {
         std::set<std::string> names;
-        for (const auto & [name, person] : people)
+
+        for (const auto & [name, person] : people) {
             if (person.could_visit(filter.zone, filter.not_before, filter.not_after, *path_graph_i)) {
                 names.emplace(name);
                 if (debug) std::cout << name << '\n';
             }
-            if (debug) std::cout << std::endl;
+        }
+
+        if (debug) std::cout << std::endl;
+
         return names;
     }
 
@@ -365,26 +425,69 @@ public:
             std::string mode(header, 4);
 
             if (mode == "TEXT") {
+                char space_after_text;
+                if (!is.get(space_after_text) || space_after_text != ' ') {
+                    throw std::runtime_error("header error: mezeraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+                }
+
                 int lines_cnt;
                 std::string zone;
-                if (is >> zone >> lines_cnt) {
-                    insert_text(is, zone, lines_cnt);
+
+
+                if (!(is >> zone >> lines_cnt)) {
+                    throw std::runtime_error("header error");
                 }
+
+
+                if (lines_cnt < 0) {
+                    throw std::runtime_error("header error");
+                }
+
+                std::string rest_of_line;
+                std::getline(is, rest_of_line);
+
+                for (char c : rest_of_line) {
+                    if (!std::isspace(c)) {
+                        throw std::runtime_error("header error");
+                    }
+                }
+
+
+                insert_text(is, zone, lines_cnt);
                 continue;
             }
 
             if (mode != little_endian && mode != big_endian)
                 throw std::runtime_error("endian: parsing error");
 
-            int zone_len = read_bin_2(is, mode);
+            uint16_t zone_len = read_bin_2(is, mode);
 
             std::string zone(zone_len, '\0');
-            is.read(zone.data(), zone_len);
+            if (!is.read(zone.data(), zone_len)) {
+                throw std::runtime_error("insert in binary errror");
+            }
 
-            int lines_cnt = read_bin_4(is, mode);
+            uint32_t lines_cnt = read_bin_4(is, mode);
 
             insert_binary(is, zone, lines_cnt, mode);
         }
+
+            if (is.gcount() > 0) {
+                for (std::streamsize i = 0; i < is.gcount(); i++) {
+                    if (!std::isspace(header[i])) {
+                        throw std::runtime_error("bordel");
+                    }
+                }
+            }
+
+
+            is.clear();
+            char c;
+            while (is.get(c)) {
+                if (!std::isspace(c)) {
+                    throw std::runtime_error("bordel2");
+                }
+            }
     }
 };
 
@@ -395,20 +498,32 @@ class CMilBase {
         std::string fst, sec, line;
         int minutes;
 
+        std::istringstream iss;
+
+
         while (std::getline(is, line)) {
             if (line.empty()) break;
-            std::istringstream iss(line);
+
+            iss.clear();
+            iss.str(line);
+
             if (iss >> fst >> sec >> minutes) {
+                if (minutes < 0 || minutes > 9)
+                    throw std::runtime_error("load_paths: wrong range");
                 path->add(fst, sec, minutes);
+            } else {
+                throw std::runtime_error("load_paths: parsing error");
             }
         }
+
+        path->precompute();
     }
 
 public:
     CMilBase() = default;
 
     void readBase(const std::string &baseFilename) {
-        std::ifstream input(baseFilename);
+        std::ifstream input(baseFilename, std::ios::binary);
         if (!input)
             throw std::runtime_error("error");
 
@@ -417,12 +532,13 @@ public:
     }
 
     CVisitorLog processLog(const std::string &logFilename) {
-        std::ifstream input(logFilename);
+        std::ifstream input(logFilename, std::ios::binary);
         if (!input)
             throw std::runtime_error("didnt found the file");
 
         CVisitorLog log(path);
         log.insert(input);
+        log.final();
         input.close();
         return log;
     }
